@@ -25,7 +25,8 @@ import threading
 import subprocess
 import socket
 import re
-from datetime import datetime
+import argparse
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 try:
@@ -228,7 +229,7 @@ class VSIMClient:
     def get_diagnostics(self) -> Dict[str, Any]:
         """Collect system diagnostics information"""
         diagnostics = {
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'device_id': self.device_id,
             'uptime': self.get_uptime(),
             'memory': self.get_memory_info(),
@@ -409,7 +410,7 @@ class VSIMClient:
             'device_id': self.device_id,
             'success': success,
             'output': output[:4096],  # Limit output size
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
         
         response = self.api_request('POST', '/vsim/commands/ack', ack_data)
@@ -425,7 +426,7 @@ class VSIMClient:
             'error_type': error_type,
             'message': message,
             'details': details or {},
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
         
         response = self.api_request('POST', '/vsim/errors', error_data)
@@ -485,9 +486,89 @@ class VSIMClient:
         self.logger.info("vSIM client stopped")
 
 
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description='OpenWrt vSIM Client - Interacts with Flask CRM API for vSIM management',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Configuration sources (in order of precedence):
+1. Command line arguments
+2. Environment variables 
+3. /etc/config/vsim_client UCI configuration
+
+Environment variables:
+  CRM_API_URL           - CRM API base URL
+  CRM_API_KEY           - API authentication key
+  VSIM_DEVICE_ID        - Device identifier
+  HEARTBEAT_INTERVAL    - Heartbeat interval in seconds
+  COMMAND_POLL_INTERVAL - Command polling interval in seconds
+  LOG_LEVEL             - Logging level (DEBUG, INFO, WARNING, ERROR)
+  LOG_FILE              - Log file path
+
+Examples:
+  openwrt_vsim_client.py
+  openwrt_vsim_client.py --api-url http://crm.example.com/api --device-id router01
+  openwrt_vsim_client.py --test-connection
+        """
+    )
+    
+    parser.add_argument('--version', action='version', version='OpenWrt vSIM Client 1.0.0')
+    parser.add_argument('--api-url', help='CRM API base URL')
+    parser.add_argument('--api-key', help='API authentication key')
+    parser.add_argument('--device-id', help='Device identifier')
+    parser.add_argument('--heartbeat-interval', type=int, help='Heartbeat interval in seconds')
+    parser.add_argument('--command-poll-interval', type=int, help='Command polling interval in seconds')
+    parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], help='Logging level')
+    parser.add_argument('--log-file', help='Log file path')
+    parser.add_argument('--test-connection', action='store_true', help='Test API connection and exit')
+    parser.add_argument('--oneshot', action='store_true', help='Run one heartbeat/command poll cycle and exit')
+    
+    return parser.parse_args()
+
+
 def main():
     """Main entry point"""
+    args = parse_arguments()
+    
+    # Apply command line arguments to environment
+    if args.api_url:
+        os.environ['CRM_API_URL'] = args.api_url
+    if args.api_key:
+        os.environ['CRM_API_KEY'] = args.api_key
+    if args.device_id:
+        os.environ['VSIM_DEVICE_ID'] = args.device_id
+    if args.heartbeat_interval:
+        os.environ['HEARTBEAT_INTERVAL'] = str(args.heartbeat_interval)
+    if args.command_poll_interval:
+        os.environ['COMMAND_POLL_INTERVAL'] = str(args.command_poll_interval)
+    if args.log_level:
+        os.environ['LOG_LEVEL'] = args.log_level
+    if args.log_file:
+        os.environ['LOG_FILE'] = args.log_file
+    
     client = VSIMClient()
+    
+    if args.test_connection:
+        # Test connection and exit
+        print(f"Testing connection to {client.config['crm_api_url']}...")
+        response = client.api_request('GET', '/health')
+        if response:
+            print("✓ Connection successful")
+            sys.exit(0)
+        else:
+            print("✗ Connection failed")
+            sys.exit(1)
+    
+    if args.oneshot:
+        # Run one cycle and exit
+        print("Running one-shot mode...")
+        client.send_heartbeat()
+        client.poll_commands()
+        print("One-shot mode completed")
+        sys.exit(0)
+    
+    # Normal daemon mode
     client.run()
 
 
